@@ -6,7 +6,6 @@ import BitmovinApi, {
   AclPermission,
   CodecConfiguration,
   ConsoleLogger,
-  DashManifest,
   DashManifestDefault,
   DashManifestDefaultVersion,
   Encoding,
@@ -26,7 +25,13 @@ import BitmovinApi, {
   Status,
   Stream,
   StreamInput,
-  Task
+  Task,
+  DashManifest,
+  Period,
+  VideoAdaptationSet,
+  AudioAdaptationSet,
+  DashFmp4Representation,
+  DashRepresentationType
 } from '@bitmovin/api-sdk';
 
 /**
@@ -84,15 +89,85 @@ async function main() {
 
   const h264Config = await createH264VideoConfig();
   const videoStream = await createStream(encoding, input, configProvider.getHttpInputFilePath(), h264Config);
-  await createFmp4Muxing(encoding, output, 'video', videoStream);
+  const videoMuxing = await createFmp4Muxing(encoding, output, 'video', videoStream);
 
   const aacConfig = await createAacAudioConfig();
   const audioStream = await createStream(encoding, input, configProvider.getHttpInputFilePath(), aacConfig);
-  await createFmp4Muxing(encoding, output, 'audio', audioStream);
+  const audioMuxing = await createFmp4Muxing(encoding, output, 'audio', audioStream);
 
+  //encoding = bitmovinApi.encoding.encodings.get(
   await executeEncoding(encoding);
 
-  await generateDashManifest(encoding, output, '/');
+  const aclEntry = new AclEntry({
+    permission: AclPermission.PUBLIC_READ
+  });
+
+  //await generateDashManifest(encoding, output, '/');
+  const manifest = await bitmovinApi.encoding.manifests.dash.create(
+      new DashManifest({
+          name: 'Getting Started Manifest',
+          manifestName: 'manifest.mpd',
+          outputs: [
+              new EncodingOutput({
+                  outputId: output.id,
+                  outputPath: buildAbsolutePath('/'),
+                  acl: [aclEntry]
+              })
+          ]
+      })
+  );
+
+  let period = new Period();
+  period.duration = 3.0;
+  period.start = 60.0;
+
+  period = await bitmovinApi.encoding.manifests.dash.periods.create(
+      manifest.id!,
+      period
+  );
+  const videoAdaptationSet = await bitmovinApi.encoding.manifests.dash.periods.adaptationsets.video.create(
+      manifest.id!,
+      period.id!,
+      new VideoAdaptationSet()
+  );
+  
+  const audioAdaptationSet = await bitmovinApi.encoding.manifests.dash.periods.adaptationsets.audio.create(
+      manifest.id!,
+      period.id!,
+      new AudioAdaptationSet({
+          lang: 'en'
+      })
+  );
+  // Adding Audio Representation
+  
+  const audioRepresentation = await bitmovinApi.encoding.manifests.dash.periods.adaptationsets.representations.fmp4.create(
+      manifest.id!,
+      period.id!,
+      audioAdaptationSet.id!,
+      new DashFmp4Representation({
+          type: DashRepresentationType.TEMPLATE,
+          encodingId: encoding.id,
+          muxingId: audioMuxing.id,
+          segmentPath: 'audio'
+      })
+  );
+  
+  // Adding Video Representation
+  
+  const videoRepresentation1 = await bitmovinApi.encoding.manifests.dash.periods.adaptationsets.representations.fmp4.create(
+      manifest.id!,
+      period.id!,
+      videoAdaptationSet.id!,
+      new DashFmp4Representation({
+          type: DashRepresentationType.TEMPLATE,
+          encodingId: encoding.id,
+          muxingId: videoMuxing.id,
+          segmentPath: 'video'
+      })
+  );
+  await bitmovinApi.encoding.manifests.dash.start(manifest.id!);
+
+
   await generateHlsManifest(encoding, output, '/');
 }
 /**
@@ -253,9 +328,9 @@ function createAacAudioConfig(): Promise<AacAudioConfiguration> {
  * @param stream The stream that is associated with the muxing
  */
 function createFmp4Muxing(encoding: Encoding, output: Output, outputPath: string, stream: Stream): Promise<Fmp4Muxing> {
-  const muxing = new Fmp4Muxing({
-    segmentLength: 4.0,
-    outputs: [buildEncodingOutput(output, outputPath)],
+	const muxing = new Fmp4Muxing({
+segmentLength: 4.0,
+outputs: [buildEncodingOutput(output, outputPath)],
     streams: [new MuxingStream({streamId: stream.id})]
   });
 
